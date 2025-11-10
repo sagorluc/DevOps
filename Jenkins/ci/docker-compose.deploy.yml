@@ -1,11 +1,9 @@
 version: "3.8"
 
 x-app-defaults: &app-defaults
-  build:
-    context: .
-  image: ${APP_IMAGE:-celery-demo:latest}
+  image: ${APP_IMAGE:?APP_IMAGE is required}
   env_file:
-    - ${ENV_FILE:-deployments/dev.env}
+    - ${ENV_FILE:?ENV_FILE is required}
   depends_on:
     - rabbitmq
   networks:
@@ -24,9 +22,9 @@ services:
 
   web:
     <<: *app-defaults
-    command: ${WEB_COMMAND:-python manage.py runserver 0.0.0.0:${WEB_PORT:-8001}}
+    command: ${WEB_COMMAND:-gunicorn celery_demo.wsgi:application --bind 0.0.0.0:8000}
     ports:
-      - "${WEB_PORT:-8001}:8001"
+      - "${WEB_PORT:-8000}:8000"
 
   celery:
     <<: *app-defaults
@@ -37,3 +35,4 @@ services:
 networks:
   celery_network:
     driver: bridge
+

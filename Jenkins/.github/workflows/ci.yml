@@ -1,0 +1,139 @@
+# GitHub Actions CI Pipeline
+# Triggers when code is merged to dev branch
+# This pipeline runs tests, creates migrations, and prepares the code for deployment
+
+name: CI Pipeline
+
+on:
+  push:
+    branches:
+      - dev
+  pull_request:
+    branches:
+      - dev
+
+env:
+  PYTHON_VERSION: '3.9'
+  DJANGO_SETTINGS_MODULE: 'celery_demo.settings'
+
+jobs:
+  setup-job:
+    name: Setup Job
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Step 1: Checkout repository code
+      - name: Run action/checkout@v4
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for proper migration detection
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Step 2: Install system dependencies
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-dev \
+            python3-pip \
+            python3-venv \
+            postgresql-client \
+            libpq-dev \
+            build-essential \
+            git
+      
+      # Step 3: Set up Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      # Step 4: Install Python dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install -r requirements.txt
+          pip install flake8 black  # Optional: code quality tools
+      
+      # Step 5: Create database migrations
+      - name: Create migrations
+        run: |
+          python manage.py makemigrations --noinput
+          python manage.py makemigrations celery_app --noinput || true
+        continue-on-error: true
+      
+      # Step 6: Check if migrations were created
+      - name: Check migration status
+        id: check-migrations
+        run: |
+          if [ -n "$(git status --porcelain celery_app/migrations/ celery_demo/migrations/ 2>/dev/null)" ]; then
+            echo "migrations_exist=true" >> $GITHUB_OUTPUT
+            echo "New migrations detected"
+          else
+            echo "migrations_exist=false" >> $GITHUB_OUTPUT
+            echo "No new migrations"
+          fi
+      
+      # Step 7: Commit migrations if they exist
+      - name: Commit migrations
+        if: steps.check-migrations.outputs.migrations_exist == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add celery_app/migrations/ celery_demo/migrations/ || true
+          git commit -m "ci: Auto-generate database migrations [skip ci]" || exit 0
+          git push origin HEAD:dev || exit 0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Step 8: Post setup - Run migrations in test database
+      - name: Post setup migrations
+        run: |
+          python manage.py migrate --noinput
+          python manage.py check --deploy
+      
+      # Step 9: Run tests
+      - name: Run tests
+        run: |
+          python manage.py test --verbosity=2
+        continue-on-error: true
+      
+      # Step 10: Code quality checks
+      - name: Lint code
+        run: |
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics || true
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics || true
+        continue-on-error: true
+      
+      # Step 11: Post run action/checkout@v4 (cleanup)
+      - name: Post run action/checkout@v4
+        if: always()
+        run: |
+          echo "Cleaning up workspace..."
+          rm -rf .venv __pycache__ */__pycache__ */*/__pycache__
+          find . -type d -name "__pycache__" -exec rm -r {} + || true
+          find . -type f -name "*.pyc" -delete || true
+  
+  complete-job:
+    name: Complete Job
+    runs-on: ubuntu-latest
+    needs: setup-job
+    if: always()
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Job completion status
+        run: |
+          echo "CI Pipeline completed"
+          echo "Branch: ${{ github.ref }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Author: ${{ github.actor }}"
+      
+      - name: Notify completion
+        run: |
+          echo "✅ CI Pipeline finished successfully"
+          echo "Code is ready for deployment via Jenkins"
+

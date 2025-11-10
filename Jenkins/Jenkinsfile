@@ -1,0 +1,686 @@
+def slackColorFor(status) {
+    switch (status?.toUpperCase()) {
+        case 'SUCCESS':
+            return '#2EB67D'
+        case 'FAILURE':
+        case 'FAILED':
+            return '#E01E5A'
+        case 'ABORTED':
+            return '#9E9E9E'
+        case 'UNSTABLE':
+            return '#ECB22E'
+        default:
+            return '#439FE0'
+    }
+}
+
+def notifySlack(String stageName, String status, String customMessage = null, String explicitColor = null) {
+    if (!env.SLACK_CHANNEL?.trim()) {
+        echo "Slack channel not configured; skipping notification for ${stageName} (${status})."
+        return
+    }
+
+    def color = explicitColor ?: slackColorFor(status)
+    def normalizedStatus = status?.toUpperCase() ?: 'UNKNOWN'
+    def message = customMessage ?: "*${env.JOB_NAME}* <${env.BUILD_URL}|#${env.BUILD_NUMBER}> `${normalizedStatus}` at stage *${stageName}* (environment: `${params?.DEPLOY_ENV}`)"
+
+    if (env.SLACK_WEBHOOK_CREDENTIALS_ID?.trim()) {
+        withCredentials([string(credentialsId: env.SLACK_WEBHOOK_CREDENTIALS_ID, variable: 'SLACK_WEBHOOK')]) {
+            slackSend(channel: env.SLACK_CHANNEL, color: color, message: message, webhookUrl: SLACK_WEBHOOK)
+        }
+    } else if (env.SLACK_TOKEN_CREDENTIALS_ID?.trim()) {
+        slackSend(channel: env.SLACK_CHANNEL, color: color, message: message, tokenCredentialId: env.SLACK_TOKEN_CREDENTIALS_ID)
+    } else {
+        slackSend(channel: env.SLACK_CHANNEL, color: color, message: message)
+    }
+}
+
+pipeline {
+    agent any
+
+    options {
+        ansiColor('xterm')
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        disableConcurrentBuilds()
+        skipDefaultCheckout()
+    }
+
+    parameters {
+        choice(
+            name: 'DEPLOY_ENV',
+            choices: ['dev', 'staging', 'production'],
+            description: 'Select the target environment for deployment.'
+        )
+        booleanParam(
+            name: 'RUN_TESTS',
+            defaultValue: true,
+            description: 'Run Django unit tests before building the Docker image.'
+        )
+    }
+
+    environment {
+        PROJECT_NAME = 'celery-demo'
+        PYTHON_BIN = 'python3'
+        VENV_PATH = '.venv'
+        IMAGE_REPOSITORY = 'registry.example.com/celery-demo'
+        DOCKER_REGISTRY_URL = 'registry.example.com'
+        DOCKER_CREDENTIALS_ID = 'docker-registry-credentials'
+        DEV_DOCKER_CONTEXT = ''
+        STAGING_DOCKER_CONTEXT = ''
+        PRODUCTION_DOCKER_CONTEXT = ''
+        SLACK_CHANNEL = '#celery-cicd'
+        SLACK_WEBHOOK_CREDENTIALS_ID = ''
+        SLACK_TOKEN_CREDENTIALS_ID = ''
+        TERRAFORM_DIR = 'terraform'
+        PROVISION_INFRASTRUCTURE = 'true'
+    }
+
+    stages {
+        stage('Checkout SCM') {
+            steps {
+                script { notifySlack('Checkout SCM', 'STARTED') }
+                cleanWs()
+            }
+            post {
+                success {
+                    script { notifySlack('Checkout SCM', 'SUCCESS') }
+                }
+                failure {
+                    script { notifySlack('Checkout SCM', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Checkout SCM', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Checkout SCM', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Checkout Git Repo') {
+            steps {
+                script { notifySlack('Checkout Git Repo', 'STARTED') }
+                checkout scm
+                sh '''
+                    git branch -a
+                    git log -1 --oneline
+                    echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Checkout Git Repo', 'SUCCESS') }
+                }
+                failure {
+                    script { notifySlack('Checkout Git Repo', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Checkout Git Repo', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Checkout Git Repo', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Set Up Python') {
+            steps {
+                script { notifySlack('Set Up Python', 'STARTED') }
+                sh '''
+                    set -e
+                    ${PYTHON_BIN} -m venv ${VENV_PATH}
+                    . ${VENV_PATH}/bin/activate
+                    python -m pip install --upgrade pip wheel
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Set Up Python', 'SUCCESS') }
+                }
+                failure {
+                    script { notifySlack('Set Up Python', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Set Up Python', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Set Up Python', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                script { notifySlack('Install Dependencies', 'STARTED') }
+                sh '''
+                    set -e
+                    . ${VENV_PATH}/bin/activate
+                    pip install -r requirements.txt
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Install Dependencies', 'SUCCESS') }
+                }
+                failure {
+                    script { notifySlack('Install Dependencies', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Install Dependencies', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Install Dependencies', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Static Analysis') {
+            steps {
+                script { notifySlack('Static Analysis', 'STARTED') }
+                sh '''
+                    set -e
+                    . ${VENV_PATH}/bin/activate
+                    python -m compileall celery_app celery_demo
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Static Analysis', 'SUCCESS') }
+                }
+                failure {
+                    script { notifySlack('Static Analysis', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Static Analysis', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Static Analysis', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Run Tests') {
+            when {
+                expression { params.RUN_TESTS }
+            }
+            steps {
+                script { notifySlack('Run Tests', 'STARTED') }
+                sh '''
+                    set -e
+                    . ${VENV_PATH}/bin/activate
+                    python manage.py test
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Run Tests', 'SUCCESS') }
+                }
+                failure {
+                    script { notifySlack('Run Tests', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Run Tests', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Run Tests', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Prepare Build Metadata') {
+            steps {
+                script { notifySlack('Prepare Build Metadata', 'STARTED') }
+                script {
+                    def shortCommit = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    def branch = sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
+                    env.IMAGE_TAG = "${params.DEPLOY_ENV}-${shortCommit}-${env.BUILD_NUMBER}"
+                    env.IMAGE_FULL_NAME = "${env.IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
+                    env.GIT_BRANCH = branch
+                    env.GIT_COMMIT = shortCommit
+                    notifySlack(
+                        'Prepare Build Metadata',
+                        'SUCCESS',
+                        "*${env.JOB_NAME}* build tag resolved to `${env.IMAGE_FULL_NAME}` (branch: ${branch})"
+                    )
+                }
+            }
+            post {
+                failure {
+                    script { notifySlack('Prepare Build Metadata', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Prepare Build Metadata', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Prepare Build Metadata', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Decrypt Terraform Variables') {
+            when {
+                expression { env.PROVISION_INFRASTRUCTURE == 'true' }
+            }
+            steps {
+                script { notifySlack('Decrypt Terraform Variables', 'STARTED') }
+                sh '''
+                    set -e
+                    if [ -f "ci/decrypt-terraform.sh" ]; then
+                        ./ci/decrypt-terraform.sh ${DEPLOY_ENV}
+                    else
+                        echo "Decrypt script not found, skipping..."
+                    fi
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Decrypt Terraform Variables', 'SUCCESS') }
+                }
+                failure {
+                    script { notifySlack('Decrypt Terraform Variables', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Decrypt Terraform Variables', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Decrypt Terraform Variables', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script { notifySlack('Build Docker Image', 'STARTED') }
+                sh '''
+                    set -e
+                    docker build \
+                      --pull \
+                      --build-arg BUILD_ENV=${DEPLOY_ENV} \
+                      -t ${IMAGE_FULL_NAME} .
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Build Docker Image', 'SUCCESS', "Image `${env.IMAGE_FULL_NAME}` built successfully.") }
+                }
+                failure {
+                    script { notifySlack('Build Docker Image', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Build Docker Image', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Build Docker Image', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Publish Docker Image') {
+            steps {
+                script { notifySlack('Publish Docker Image', 'STARTED') }
+                withCredentials([usernamePassword(
+                    credentialsId: env.DOCKER_CREDENTIALS_ID,
+                    usernameVariable: 'DOCKER_USERNAME',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
+                    sh '''
+                        set -e
+                        if [ -z "${DOCKER_REGISTRY_URL}" ]; then
+                          echo "${DOCKER_PASSWORD}" | docker login --username "${DOCKER_USERNAME}" --password-stdin
+                        else
+                          echo "${DOCKER_PASSWORD}" | docker login "${DOCKER_REGISTRY_URL}" --username "${DOCKER_USERNAME}" --password-stdin
+                        fi
+                        docker push ${IMAGE_FULL_NAME}
+                    '''
+                }
+            }
+            post {
+                success {
+                    script { notifySlack('Publish Docker Image', 'SUCCESS', "Image `${env.IMAGE_FULL_NAME}` pushed to `${env.DOCKER_REGISTRY_URL}`.") }
+                }
+                failure {
+                    script { notifySlack('Publish Docker Image', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Publish Docker Image', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Publish Docker Image', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Terraform: Validate') {
+            when {
+                expression { env.PROVISION_INFRASTRUCTURE == 'true' }
+            }
+            steps {
+                script { notifySlack('Terraform: Validate', 'STARTED') }
+                sh '''
+                    set -e
+                    if [ -d "${TERRAFORM_DIR}" ]; then
+                        cd ${TERRAFORM_DIR}
+                        terraform version
+                        ./../ci/terraform.sh validate ${DEPLOY_ENV}
+                    else
+                        echo "Terraform directory not found, skipping infrastructure provisioning"
+                    fi
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Terraform: Validate', 'SUCCESS') }
+                }
+                failure {
+                    script { notifySlack('Terraform: Validate', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Terraform: Validate', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Terraform: Validate', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Terraform: Plan') {
+            when {
+                expression { env.PROVISION_INFRASTRUCTURE == 'true' }
+            }
+            steps {
+                script { notifySlack('Terraform: Plan', 'STARTED') }
+                sh '''
+                    set -e
+                    if [ -d "${TERRAFORM_DIR}" ]; then
+                        cd ${TERRAFORM_DIR}
+                        ./../ci/terraform.sh init ${DEPLOY_ENV}
+                        ./../ci/terraform.sh plan ${DEPLOY_ENV}
+                    else
+                        echo "Terraform directory not found, skipping infrastructure provisioning"
+                    fi
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Terraform: Plan', 'SUCCESS', "Infrastructure plan generated for `${params.DEPLOY_ENV}`.") }
+                }
+                failure {
+                    script { notifySlack('Terraform: Plan', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Terraform: Plan', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Terraform: Plan', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Terraform: Apply') {
+            when {
+                expression { env.PROVISION_INFRASTRUCTURE == 'true' }
+            }
+            steps {
+                script { notifySlack('Terraform: Apply', 'STARTED') }
+                sh '''
+                    set -e
+                    if [ -d "${TERRAFORM_DIR}" ]; then
+                        cd ${TERRAFORM_DIR}
+                        ./../ci/terraform.sh apply ${DEPLOY_ENV}
+                        terraform output -json > ../terraform-outputs-${DEPLOY_ENV}.json || true
+                    else
+                        echo "Terraform directory not found, skipping infrastructure provisioning"
+                    fi
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Terraform: Apply', 'SUCCESS', "Infrastructure provisioned for `${params.DEPLOY_ENV}`.") }
+                }
+                failure {
+                    script { notifySlack('Terraform: Apply', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Terraform: Apply', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Terraform: Apply', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Collect Static Files') {
+            steps {
+                script { notifySlack('Collect Static Files', 'STARTED') }
+                sh '''
+                    set -e
+                    if [ -f "ci/collect-static.sh" ]; then
+                        ./ci/collect-static.sh ${DEPLOY_ENV} ci/docker-compose.deploy.yml ${IMAGE_FULL_NAME}
+                    else
+                        echo "Collect static script not found, using docker compose directly..."
+                        export APP_IMAGE="${IMAGE_FULL_NAME}"
+                        export ENV_FILE="deployments/${DEPLOY_ENV}.env"
+                        docker compose -f ci/docker-compose.deploy.yml --env-file deployments/${DEPLOY_ENV}.env run --rm web python manage.py collectstatic --noinput --clear
+                    fi
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Collect Static Files', 'SUCCESS') }
+                }
+                failure {
+                    script { notifySlack('Collect Static Files', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Collect Static Files', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Collect Static Files', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Migrate Database') {
+            steps {
+                script { notifySlack('Migrate Database', 'STARTED') }
+                sh '''
+                    set -e
+                    if [ -f "ci/migrate-db.sh" ]; then
+                        ./ci/migrate-db.sh ${DEPLOY_ENV} ci/docker-compose.deploy.yml ${IMAGE_FULL_NAME}
+                    else
+                        echo "Migrate script not found, using docker compose directly..."
+                        export APP_IMAGE="${IMAGE_FULL_NAME}"
+                        export ENV_FILE="deployments/${DEPLOY_ENV}.env"
+                        docker compose -f ci/docker-compose.deploy.yml --env-file deployments/${DEPLOY_ENV}.env run --rm web python manage.py migrate --noinput
+                    fi
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Migrate Database', 'SUCCESS') }
+                }
+                failure {
+                    script { notifySlack('Migrate Database', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Migrate Database', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Migrate Database', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Create Superuser') {
+            steps {
+                script { notifySlack('Create Superuser', 'STARTED') }
+                sh '''
+                    set -e
+                    if [ -f "ci/create-superuser.sh" ]; then
+                        ./ci/create-superuser.sh ${DEPLOY_ENV} ci/docker-compose.deploy.yml ${IMAGE_FULL_NAME}
+                    else
+                        echo "Create superuser script not found, skipping..."
+                    fi
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Create Superuser', 'SUCCESS') }
+                }
+                failure {
+                    script { notifySlack('Create Superuser', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Create Superuser', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Create Superuser', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Deploy Dev') {
+            when {
+                expression { params.DEPLOY_ENV == 'dev' }
+            }
+            steps {
+                script { notifySlack('Deploy Dev', 'STARTED') }
+                sh '''
+                    set -e
+                    export DEV_DOCKER_CONTEXT="${DEV_DOCKER_CONTEXT}"
+                    ./ci/deploy.sh dev ${IMAGE_FULL_NAME}
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Deploy Dev', 'SUCCESS', "Deployment to *dev* completed.") }
+                }
+                failure {
+                    script { notifySlack('Deploy Dev', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Deploy Dev', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Deploy Dev', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Deploy Staging') {
+            when {
+                expression { params.DEPLOY_ENV == 'staging' }
+            }
+            steps {
+                script { notifySlack('Deploy Staging', 'STARTED') }
+                sh '''
+                    set -e
+                    export STAGING_DOCKER_CONTEXT="${STAGING_DOCKER_CONTEXT}"
+                    ./ci/deploy.sh staging ${IMAGE_FULL_NAME}
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Deploy Staging', 'SUCCESS', "Deployment to *staging* completed.") }
+                }
+                failure {
+                    script { notifySlack('Deploy Staging', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Deploy Staging', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Deploy Staging', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Deploy Production') {
+            when {
+                expression { params.DEPLOY_ENV == 'production' }
+            }
+            steps {
+                script { notifySlack('Deploy Production', 'STARTED') }
+                sh '''
+                    set -e
+                    export PRODUCTION_DOCKER_CONTEXT="${PRODUCTION_DOCKER_CONTEXT}"
+                    ./ci/deploy.sh production ${IMAGE_FULL_NAME}
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Deploy Production', 'SUCCESS', "Deployment to *production* completed.") }
+                }
+                failure {
+                    script { notifySlack('Deploy Production', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Deploy Production', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Deploy Production', 'UNSTABLE') }
+                }
+            }
+        }
+
+        stage('Clean Up') {
+            steps {
+                script { notifySlack('Clean Up', 'STARTED') }
+                sh '''
+                    set -e
+                    echo "Cleaning up temporary files and containers..."
+                    
+                    # Remove temporary Terraform files if decrypted
+                    rm -f terraform/*.tfvars 2>/dev/null || true
+                    
+                    # Clean up Docker build cache (optional)
+                    docker system prune -f --volumes || true
+                    
+                    # Remove dangling images
+                    docker image prune -f || true
+                    
+                    # Clean up workspace
+                    find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+                    find . -type f -name "*.pyc" -delete 2>/dev/null || true
+                    rm -rf .venv *.egg-info 2>/dev/null || true
+                    
+                    echo "✅ Cleanup completed"
+                '''
+            }
+            post {
+                success {
+                    script { notifySlack('Clean Up', 'SUCCESS') }
+                }
+                failure {
+                    script { notifySlack('Clean Up', 'FAILED') }
+                }
+                aborted {
+                    script { notifySlack('Clean Up', 'ABORTED') }
+                }
+                unstable {
+                    script { notifySlack('Clean Up', 'UNSTABLE') }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script { notifySlack('Pipeline', 'SUCCESS', "*${env.JOB_NAME}* completed successfully for `${params.DEPLOY_ENV}`.") }
+        }
+        failure {
+            script { notifySlack('Pipeline', 'FAILED', "*${env.JOB_NAME}* failed during `${params.DEPLOY_ENV}` deployment.") }
+        }
+        aborted {
+            script { notifySlack('Pipeline', 'ABORTED', "*${env.JOB_NAME}* was aborted.") }
+        }
+        unstable {
+            script { notifySlack('Pipeline', 'UNSTABLE', "*${env.JOB_NAME}* finished with unstable result.") }
+        }
+        always {
+            cleanWs(cleanWhenAborted: true, cleanWhenFailure: true, deleteDirs: true)
+        }
+    }
+}
+

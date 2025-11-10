@@ -10,9 +10,11 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
-from pathlib import Path
-from celery.schedules import crontab
 from datetime import timedelta
+from pathlib import Path
+
+import dj_database_url
+from celery.schedules import crontab
 import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -24,13 +26,30 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
+
+def env_bool(name: str, default: str = "False") -> bool:
+    return os.environ.get(name, default).lower() in ("1", "true", "yes", "on")
+
+
+def env_list(name: str, default: str = "") -> list[str]:
+    raw_value = os.environ.get(name, default)
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-ds8fys@jht@3%^9vz_kc5^1+14nl*j45miu^*c**rbt7o70oi@"
+SECRET_KEY = os.environ.get(
+    "DJANGO_SECRET_KEY",
+    os.environ.get(
+        "SECRET_KEY",
+        "django-insecure-ds8fys@jht@3%^9vz_kc5^1+14nl*j45miu^*c**rbt7o70oi@",
+    ),
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env_bool("DJANGO_DEBUG", "True")
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1")
+CSRF_TRUSTED_ORIGINS = env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
 
 
 # Application definition
@@ -86,10 +105,11 @@ WSGI_APPLICATION = "celery_demo.wsgi.application"
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
+    "default": dj_database_url.config(
+        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+        conn_max_age=int(os.environ.get("DATABASE_CONN_MAX_AGE", "60")),
+        ssl_require=env_bool("DATABASE_SSL_REQUIRE", "False"),
+    )
 }
 
 
@@ -141,6 +161,7 @@ SIMPLE_JWT = {
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
 
 STATIC_URL = "static/"
+STATIC_ROOT = os.environ.get("DJANGO_STATIC_ROOT", str(BASE_DIR / "staticfiles"))
 STATICFILES_DIR = [
     STATIC_DIR,
 ]
@@ -151,8 +172,10 @@ STATICFILES_DIR = [
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Celery Settings
-# CELERY_BROKER_URL = 'redis://127.0.0.1:6379/0'
 # CELERY_RESULT_BACKEND = 'redis://127.0.0.1:6379/0' # we can use redis for task result
+CELERY_BROKER_URL = os.environ.get(
+    "CELERY_BROKER_URL", "amqp://guest:guest@rabbitmq:5672/"
+)
 CELERY_RESULT_BACKEND = "django-db"  # can use django default db
 CELERY_TIMEZONE = "Asia/Dhaka"
 
